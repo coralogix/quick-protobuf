@@ -392,7 +392,7 @@ impl BytesReader {
 
     /// First reads a varint and use it as size to read a generic object
     #[cfg_attr(std, inline(always))]
-    fn read_len_varint<'a, M, F>(&mut self, bytes: &'a [u8], read: F) -> Result<M>
+    pub fn read_len_varint<'a, M, F>(&mut self, bytes: &'a [u8], read: F) -> Result<M>
     where
         F: FnMut(&mut BytesReader, &'a [u8]) -> Result<M>,
     {
