@@ -135,5 +135,5 @@ Add benchmarks that highlight the SIMD improvements:
 
 ### Task 6: Update documentation
 
-- [ ] Update CLAUDE.md with ARM64/NEON optimization patterns and conventions
-- [ ] Move this plan to `docs/plans/completed/`
+- [x] Update CLAUDE.md with ARM64/NEON optimization patterns and conventions
+- [x] Move this plan to `docs/plans/completed/`

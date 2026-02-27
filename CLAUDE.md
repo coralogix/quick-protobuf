@@ -41,6 +41,33 @@ Any iterator type over `PackedFixed` must implement both `size_hint()` returning
 `(remaining, Some(remaining))` and `ExactSizeIterator`. Test both `Owned` and `Borrowed`
 variants.
 
+### ARM64/NEON optimizations
+ARM64-specific optimizations are gated on `cfg(target_arch = "aarch64")` with the existing
+scalar code preserved under `cfg(not(target_arch = "aarch64"))`. NEON is mandatory on
+ARMv8-A, so no feature flag is needed — only the target arch gate.
+
+Three optimization layers exist:
+
+1. **Branchless single varint decode** (`decode_varint32_branchless`, `decode_varint64_branchless`):
+   Free functions that load 8 bytes as a u64, use bit manipulation (MSB mask, isolate-first-
+   terminator, shift-and-mask payload extraction) to decode without branches. Used in
+   `read_varint32` and `read_varint64` fast paths on aarch64.
+
+2. **NEON batch varint32 decode** (`batch_decode_varint32_neon`):
+   Unsafe function using `core::arch::aarch64` NEON intrinsics (`vld1q_u8`, `vshrq_n_u8`,
+   `vmulq_u8`, `vpaddlq_*`) to extract continuation-bit masks from 16-byte chunks, then
+   decodes individual varints branchlessly. Called from `read_packed_int32`.
+
+3. **`read_packed_int32` method**: Public method on `BytesReader` that uses the NEON batch
+   path on aarch64 with scalar fallback for tail bytes and on non-aarch64 architectures.
+
+When adding new ARM64 optimizations, follow these conventions:
+- Gate with `cfg(target_arch = "aarch64")`, keep scalar fallback under `cfg(not(...))`
+- Use `#[cfg(any(target_arch = "aarch64", test))]` for helper functions that need unit
+  testing on all architectures
+- Use `core::arch::aarch64` intrinsics (stable since Rust 1.59), not inline assembly
+- Unsafe NEON functions must document their safety preconditions
+
 ## Inline Attribute Convention
 
 Use `#[cfg_attr(feature = "std", inline(always))]` for hot single-expression methods and
