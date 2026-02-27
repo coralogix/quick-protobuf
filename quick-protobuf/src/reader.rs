@@ -111,6 +111,109 @@ fn decode_varint64_branchless(raw: u64) -> Option<(u64, usize)> {
     Some((value, len))
 }
 
+/// NEON-accelerated batch varint32 decode for packed fields.
+/// Decodes varints from `buf[start..end]` into `out`, using NEON to detect
+/// varint boundaries in 16-byte chunks and branchless scalar decode for values.
+/// Returns the position after the last successfully decoded varint.
+/// Varints longer than 5 bytes (negative i32 encoding) are not handled;
+/// the caller must use scalar decode for the remainder.
+///
+/// # Safety
+/// Caller must ensure `start <= end <= buf.len()`.
+#[cfg(target_arch = "aarch64")]
+#[cfg_attr(feature = "std", inline)]
+unsafe fn batch_decode_varint32_neon(
+    buf: &[u8],
+    start: usize,
+    end: usize,
+    out: &mut Vec<i32>,
+) -> usize {
+    use core::arch::aarch64::*;
+
+    let mut pos = start;
+
+    // Process 16-byte chunks. Need pos + 16 <= end (message boundary)
+    // AND pos + 16 <= buf.len() (buffer boundary) for the NEON load.
+    // Branchless decode loads 8 bytes, so varints starting at local offset <= 8
+    // are safe (pos + 8 + 8 <= pos + 16 <= buf.len()).
+    while pos + 16 <= end && pos + 16 <= buf.len() {
+        // Load 16 bytes and extract continuation-bit mask via NEON
+        let data = vld1q_u8(buf.as_ptr().add(pos));
+        let msbs = vshrq_n_u8(data, 7);
+
+        // Convert 16-byte vector to 16-bit scalar mask using
+        // power-of-2 weighted reduction (NEON movemask equivalent)
+        static POWERS: [u8; 16] = [
+            1, 2, 4, 8, 16, 32, 64, 128,
+            1, 2, 4, 8, 16, 32, 64, 128,
+        ];
+        let powers = vld1q_u8(POWERS.as_ptr());
+        let weighted = vmulq_u8(msbs, powers);
+        let sum16 = vpaddlq_u8(weighted);
+        let sum32 = vpaddlq_u16(sum16);
+        let sum64 = vpaddlq_u32(sum32);
+        let lo = vgetq_lane_u64(sum64, 0) as u8;
+        let hi = vgetq_lane_u64(sum64, 1) as u8;
+        let cont_mask = ((hi as u16) << 8) | (lo as u16);
+
+        // Terminator mask: bit i set where byte i is the last byte of a varint
+        let term_mask = !cont_mask;
+
+        if term_mask == 0 {
+            // No complete varint in 16 bytes - fall back to scalar
+            break;
+        }
+
+        let mut local_pos: usize = 0;
+        let mut remaining_term = term_mask;
+
+        while remaining_term != 0 {
+            // Safe decode zone: local_pos <= 8 guarantees 8 bytes available
+            // for branchless u64 load (pos + 8 + 8 <= pos + 16 <= buf.len())
+            if local_pos > 8 {
+                break;
+            }
+
+            let term_bit = remaining_term.trailing_zeros() as usize;
+            let varint_len = term_bit - local_pos + 1;
+
+            // >5 byte varint (negative i32 encoding) - defer to scalar
+            if varint_len > 5 {
+                break;
+            }
+
+            let raw = u64::from_le_bytes(
+                buf[pos + local_pos..pos + local_pos + 8]
+                    .try_into()
+                    .unwrap(),
+            );
+
+            match decode_varint32_branchless(raw) {
+                Some((value, len)) => {
+                    out.push(value as i32);
+                    local_pos += len;
+                }
+                None => break,
+            }
+
+            // Clear all bits up to and including this terminator
+            if term_bit < 15 {
+                remaining_term &= !((2u16 << term_bit) - 1);
+            } else {
+                remaining_term = 0;
+            }
+        }
+
+        if local_pos == 0 {
+            break;
+        }
+
+        pos += local_pos;
+    }
+
+    pos
+}
+
 /// A struct to read protocol binary files
 ///
 /// # Examples
@@ -771,6 +874,34 @@ impl BytesReader {
             while !r.is_eof() {
                 v.push(read(r, b)?);
             }
+            Ok(v)
+        })
+    }
+
+    /// Reads packed repeated int32 field with NEON-accelerated batch decode on ARM64.
+    ///
+    /// On ARM64, uses NEON intrinsics to detect varint boundaries in parallel across
+    /// 16-byte chunks, then decodes individual varints using branchless scalar decode.
+    /// On other architectures, falls back to standard per-element varint decode.
+    #[cfg_attr(feature = "std", inline)]
+    pub fn read_packed_int32(&mut self, bytes: &[u8]) -> Result<Vec<i32>> {
+        self.read_len_varint(bytes, |r, b| {
+            let capacity = r.len().min(1024);
+            let mut v: Vec<i32> = Vec::with_capacity(capacity);
+
+            #[cfg(target_arch = "aarch64")]
+            {
+                // Safety: r.start <= r.end is maintained by BytesReader invariants,
+                // and r.end <= b.len() is enforced by read_len_varint.
+                let new_pos = unsafe { batch_decode_varint32_neon(b, r.start, r.end, &mut v) };
+                r.start = new_pos;
+            }
+
+            // Scalar fallback for remaining bytes (or all bytes on non-aarch64)
+            while !r.is_eof() {
+                v.push(r.read_varint32(b)? as i32);
+            }
+
             Ok(v)
         })
     }
@@ -2033,4 +2164,167 @@ fn test_branchless_varint64_matches_scalar_for_all_sizes() {
         assert_eq!(reader_val, val, "BytesReader mismatch for {}", val);
         assert_eq!(reader.start, encoded.len(), "BytesReader consumed wrong number of bytes for {}", val);
     }
+}
+
+// --- Tests for read_packed_int32 (NEON batch varint32 decode) ---
+
+/// Helper: encode a u32 as a protobuf varint into buf
+fn encode_varint_u32(mut value: u32, buf: &mut Vec<u8>) {
+    while value >= 0x80 {
+        buf.push((value as u8) | 0x80);
+        value >>= 7;
+    }
+    buf.push(value as u8);
+}
+
+/// Helper: encode an i32 as a protobuf varint (negative values use 10-byte encoding)
+fn encode_varint_i32(value: i32, buf: &mut Vec<u8>) {
+    if value >= 0 {
+        encode_varint_u32(value as u32, buf);
+    } else {
+        // Negative i32: encoded as 10-byte varint (sign-extended to u64)
+        let mut v = value as u64;
+        for _ in 0..9 {
+            buf.push((v as u8) | 0x80);
+            v >>= 7;
+        }
+        buf.push(v as u8);
+    }
+}
+
+/// Helper: build a packed int32 field (length prefix + varint-encoded values)
+fn build_packed_int32(values: &[i32]) -> Vec<u8> {
+    let mut payload = Vec::new();
+    for &v in values {
+        encode_varint_i32(v, &mut payload);
+    }
+    let mut result = Vec::new();
+    encode_varint_u32(payload.len() as u32, &mut result);
+    result.extend_from_slice(&payload);
+    result
+}
+
+#[test]
+fn test_read_packed_int32_matches_scalar_small_values() {
+    // All 1-byte varints (0-127)
+    let values: Vec<i32> = (0..20).collect();
+    let data = build_packed_int32(&values);
+    let mut reader = BytesReader::from_bytes(&data);
+    let result = reader.read_packed_int32(&data).unwrap();
+    assert_eq!(result, values);
+    assert!(reader.is_eof());
+}
+
+#[test]
+fn test_read_packed_int32_matches_scalar_mixed_sizes() {
+    // Mix of 1-byte, 2-byte, 3-byte, 4-byte, and 5-byte varints
+    let values = vec![
+        0, 1, 127,          // 1-byte
+        128, 255, 16383,     // 2-byte
+        16384, 2097151,      // 3-byte
+        2097152, 268435455,  // 4-byte
+        268435456, i32::MAX, // 5-byte
+    ];
+    let data = build_packed_int32(&values);
+    let mut reader = BytesReader::from_bytes(&data);
+    let result = reader.read_packed_int32(&data).unwrap();
+    assert_eq!(result, values);
+}
+
+#[test]
+fn test_read_packed_int32_matches_scalar_vs_read_packed() {
+    // Compare read_packed_int32 against read_packed with read_int32
+    let values: Vec<i32> = (0..50).map(|i| i * 1000).collect();
+    let data = build_packed_int32(&values);
+
+    let mut reader1 = BytesReader::from_bytes(&data);
+    let result1 = reader1.read_packed_int32(&data).unwrap();
+
+    let mut reader2 = BytesReader::from_bytes(&data);
+    let result2 = reader2
+        .read_packed(&data, BytesReader::read_int32)
+        .unwrap();
+
+    assert_eq!(result1, result2);
+}
+
+#[test]
+fn test_read_packed_int32_negative_values() {
+    // Negative i32 values use 10-byte varint encoding
+    let values = vec![-1, -128, -32768, i32::MIN, 0, 1, -1];
+    let data = build_packed_int32(&values);
+    let mut reader = BytesReader::from_bytes(&data);
+    let result = reader.read_packed_int32(&data).unwrap();
+    assert_eq!(result, values);
+}
+
+#[test]
+fn test_read_packed_int32_empty() {
+    let data = build_packed_int32(&[]);
+    let mut reader = BytesReader::from_bytes(&data);
+    let result = reader.read_packed_int32(&data).unwrap();
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_read_packed_int32_single_element() {
+    let values = vec![42];
+    let data = build_packed_int32(&values);
+    let mut reader = BytesReader::from_bytes(&data);
+    let result = reader.read_packed_int32(&data).unwrap();
+    assert_eq!(result, values);
+}
+
+#[test]
+fn test_read_packed_int32_exactly_16_payload_bytes() {
+    // Build a payload that is exactly 16 bytes
+    // 16 single-byte varints (values 0-15)
+    let values: Vec<i32> = (0..16).collect();
+    let data = build_packed_int32(&values);
+    // Verify payload is 16 bytes (length prefix is 1 byte for value 16)
+    assert_eq!(data[0], 16); // length prefix
+    assert_eq!(data.len(), 17); // 1 prefix + 16 payload
+    let mut reader = BytesReader::from_bytes(&data);
+    let result = reader.read_packed_int32(&data).unwrap();
+    assert_eq!(result, values);
+}
+
+#[test]
+fn test_read_packed_int32_17_payload_bytes() {
+    // Build a payload that is 17 bytes: 17 single-byte varints
+    let values: Vec<i32> = (0..17).collect();
+    let data = build_packed_int32(&values);
+    assert_eq!(data[0], 17);
+    assert_eq!(data.len(), 18);
+    let mut reader = BytesReader::from_bytes(&data);
+    let result = reader.read_packed_int32(&data).unwrap();
+    assert_eq!(result, values);
+}
+
+#[test]
+fn test_read_packed_int32_many_elements() {
+    // Stress test with many elements of varying sizes
+    let values: Vec<i32> = (0..200)
+        .map(|i| match i % 5 {
+            0 => i,             // small (1-byte)
+            1 => i * 200,       // medium (2-byte)
+            2 => i * 40000,     // large (3-byte)
+            3 => i * 5000000,   // very large (4-byte)
+            _ => i * 100,       // mixed
+        })
+        .collect();
+    let data = build_packed_int32(&values);
+    let mut reader = BytesReader::from_bytes(&data);
+    let result = reader.read_packed_int32(&data).unwrap();
+    assert_eq!(result, values);
+}
+
+#[test]
+fn test_read_packed_int32_all_max_positive() {
+    // All i32::MAX values (5-byte varints)
+    let values = vec![i32::MAX; 10];
+    let data = build_packed_int32(&values);
+    let mut reader = BytesReader::from_bytes(&data);
+    let result = reader.read_packed_int32(&data).unwrap();
+    assert_eq!(result, values);
 }

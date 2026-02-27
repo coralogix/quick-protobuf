@@ -98,7 +98,7 @@ Apply the same branchless approach to varint64:
 
 Add a NEON-accelerated path for `read_packed` when decoding varint-encoded types:
 
-- [ ] Add `#[cfg(target_arch = "aarch64")]` module with NEON batch varint32 decode function
+- [x] Add `#[cfg(target_arch = "aarch64")]` module with NEON batch varint32 decode function
   - Uses `core::arch::aarch64` intrinsics: `vld1q_u8`, `vcltq_u8`, `vandq_u8`, `vgetq_lane_u8`
   - Load 16 bytes via `vld1q_u8`
   - Extract continuation bits via vector comparison against 0x80
@@ -106,11 +106,11 @@ Add a NEON-accelerated path for `read_packed` when decoding varint-encoded types
   - Decode up to 4+ varints per 16-byte load using lookup tables or shift chains
   - Write decoded u32 values directly into output Vec
   - Handle tail (remaining bytes < 16) with scalar fallback
-- [ ] Add `read_packed_varint32_neon` method to BytesReader, called from `read_packed` when
+- [x] Add `read_packed_varint32_neon` method to BytesReader, called from `read_packed` when
     the read closure matches varint32 patterns, or add a dedicated `read_packed_int32` method
-- [ ] Write tests: batch decode matches scalar decode for varied varint sizes and counts
-- [ ] Write tests: edge cases - empty packed field, single element, exactly 16 bytes, 17 bytes
-- [ ] Run project test suite - must pass before task 4
+- [x] Write tests: batch decode matches scalar decode for varied varint sizes and counts
+- [x] Write tests: edge cases - empty packed field, single element, exactly 16 bytes, 17 bytes
+- [x] Run project test suite - must pass before task 4
 
 ### Task 4: ARM64-targeted benchmarks
 
