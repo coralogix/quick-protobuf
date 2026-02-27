@@ -514,10 +514,10 @@ impl BytesReader {
             return Err(Error::UnexpectedEndOfBuffer);
         }
         self.end = self.start + len;
-        let v = read(self, bytes)?;
+        let v = read(self, bytes);
         self.start = self.end;
         self.end = cur_end;
-        Ok(v)
+        v
     }
 
     /// Reads bytes (Vec<u8>)
