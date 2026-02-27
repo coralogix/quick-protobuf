@@ -65,12 +65,12 @@ Replace the generic `read_fixed<M, F: Fn(&[u8]) -> M>` method and its callers wi
 **Files:**
 - Modify: `quick-protobuf/src/reader.rs`
 
-- [ ] Implement `size_hint()` on `PackedFixedIntoIter`: return `(remaining, Some(remaining))` where `remaining = self.packed_fixed.len() - self.index`
-- [ ] Implement `size_hint()` on `PackedFixedRefIter`: same pattern
-- [ ] Add `ExactSizeIterator` impl for both iterators (since the count is always known)
-- [ ] Add test: verify `size_hint` returns correct values during iteration
-- [ ] Add test: verify `collect::<Vec<_>>()` produces correct results (exercises size_hint for pre-allocation)
-- [ ] Run lib tests
+- [x] Implement `size_hint()` on `PackedFixedIntoIter`: return `(remaining, Some(remaining))` where `remaining = self.packed_fixed.len() - self.index`
+- [x] Implement `size_hint()` on `PackedFixedRefIter`: same pattern
+- [x] Add `ExactSizeIterator` impl for both iterators (since the count is always known)
+- [x] Add test: verify `size_hint` returns correct values during iteration
+- [x] Add test: verify `collect::<Vec<_>>()` produces correct results (exercises size_hint for pre-allocation)
+- [x] Run lib tests
 
 ### Task 4: Benchmark and validate optimizations
 

@@ -1002,7 +1002,14 @@ impl<'a, T: Copy + PartialEq> Iterator for PackedFixedIntoIter<'a, T> {
             res
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.packed_fixed.len() - self.index;
+        (remaining, Some(remaining))
+    }
 }
+
+impl<'a, T: Copy + PartialEq> ExactSizeIterator for PackedFixedIntoIter<'a, T> {}
 
 impl<'a, T: Copy + PartialEq> IntoIterator for PackedFixed<'a, T> {
     type Item = T;
@@ -1046,7 +1053,14 @@ impl<'a, T: Copy + PartialEq> Iterator for PackedFixedRefIter<'a, T> {
             res
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.packed_fixed.len() - self.index;
+        (remaining, Some(remaining))
+    }
 }
+
+impl<'a, T: Copy + PartialEq> ExactSizeIterator for PackedFixedRefIter<'a, T> {}
 
 impl<'a, T: Copy + PartialEq> IntoIterator for &'a PackedFixed<'a, T> {
     type Item = T;
@@ -1281,6 +1295,60 @@ fn test_packed_fixed_iter() {
     }
 
     assert_eq!(total, (1 + 2 + 3 + 4 + 5) * (10 + 1));
+}
+
+#[test]
+fn test_packed_fixed_size_hint() {
+    let pf: PackedFixed<i32> = vec![1, 2, 3, 4, 5].into();
+
+    // Test ref iterator size_hint
+    let mut iter = (&pf).into_iter();
+    assert_eq!(iter.size_hint(), (5, Some(5)));
+    assert_eq!(iter.len(), 5);
+    iter.next();
+    assert_eq!(iter.size_hint(), (4, Some(4)));
+    assert_eq!(iter.len(), 4);
+    iter.next();
+    iter.next();
+    assert_eq!(iter.size_hint(), (2, Some(2)));
+    assert_eq!(iter.len(), 2);
+    iter.next();
+    iter.next();
+    assert_eq!(iter.size_hint(), (0, Some(0)));
+    assert_eq!(iter.len(), 0);
+
+    // Test owned iterator size_hint
+    let pf2: PackedFixed<i32> = vec![10, 20, 30].into();
+    let mut iter = pf2.into_iter();
+    assert_eq!(iter.size_hint(), (3, Some(3)));
+    assert_eq!(iter.len(), 3);
+    iter.next();
+    assert_eq!(iter.size_hint(), (2, Some(2)));
+    iter.next();
+    iter.next();
+    assert_eq!(iter.size_hint(), (0, Some(0)));
+    assert_eq!(iter.len(), 0);
+}
+
+#[test]
+fn test_packed_fixed_collect() {
+    // Test collect on owned iterator
+    let pf: PackedFixed<i32> = vec![1, 2, 3, 4, 5].into();
+    let collected: Vec<i32> = pf.into_iter().collect();
+    assert_eq!(collected, vec![1, 2, 3, 4, 5]);
+
+    // Test collect on ref iterator
+    let pf: PackedFixed<i32> = vec![10, 20, 30].into();
+    let collected: Vec<i32> = (&pf).into_iter().collect();
+    assert_eq!(collected, vec![10, 20, 30]);
+
+    // Test collect on borrowed variant
+    let bytes: [u8; 12] = [
+        0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+    ];
+    let pf: PackedFixed<i32> = PackedFixed::Borrowed(&bytes);
+    let collected: Vec<i32> = pf.into_iter().collect();
+    assert_eq!(collected, vec![1, 2, 3]);
 }
 
 #[test]
