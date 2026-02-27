@@ -56,9 +56,9 @@ Replace the generic `read_fixed<M, F: Fn(&[u8]) -> M>` method and its callers wi
 **Files:**
 - Modify: `quick-protobuf/src/reader.rs`
 
-- [ ] Add `#[cold]` attribute to `read_varint32_slow`
-- [ ] Add `#[cold]` attribute to `read_varint64_slow`
-- [ ] Run lib tests
+- [x] Add `#[cold]` attribute to `read_varint32_slow`
+- [x] Add `#[cold]` attribute to `read_varint64_slow`
+- [x] Run lib tests
 
 ### Task 3: Add size_hint to PackedFixed iterators
 

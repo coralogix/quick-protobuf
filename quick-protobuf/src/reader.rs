@@ -174,7 +174,7 @@ impl BytesReader {
 
     /// Slow path for read_varint32 when fewer than 5 bytes remain.
     /// Uses per-byte bounds checks via read_u8.
-    #[cfg_attr(feature = "std", inline)]
+    #[cold]
     fn read_varint32_slow(&mut self, bytes: &[u8]) -> Result<u32> {
         let mut b = self.read_u8(bytes)?;
         if b & 0x80 == 0 {
@@ -308,7 +308,7 @@ impl BytesReader {
 
     /// Slow path for read_varint64 when fewer than 10 bytes remain.
     /// Uses per-byte bounds checks via read_u8.
-    #[cfg_attr(feature = "std", inline)]
+    #[cold]
     fn read_varint64_slow(&mut self, bytes: &[u8]) -> Result<u64> {
         // part0
         let mut b = self.read_u8(bytes)?;
