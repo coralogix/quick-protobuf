@@ -77,11 +77,11 @@ Replace the generic `read_fixed<M, F: Fn(&[u8]) -> M>` method and its callers wi
 **Files:**
 - Modify: `quick-protobuf/benches/benches.rs`
 
-- [ ] Run existing benchmarks to establish baseline before changes (if not already done)
-- [ ] Run benchmarks after all changes to measure impact
-- [ ] Verify no regressions in any benchmark
-- [ ] Run full test suite (`cargo test --manifest-path quick-protobuf/Cargo.toml --lib`)
-- [ ] Run clippy (`cargo clippy --manifest-path quick-protobuf/Cargo.toml`)
+- [x] Run existing benchmarks to establish baseline before changes (if not already done)
+- [x] Run benchmarks after all changes to measure impact
+- [x] Verify no regressions in any benchmark
+- [x] Run full test suite (`cargo test --manifest-path quick-protobuf/Cargo.toml --lib`)
+- [x] Run clippy (`cargo clippy --manifest-path quick-protobuf/Cargo.toml`)
 
 ### Task 5: Update documentation
 
