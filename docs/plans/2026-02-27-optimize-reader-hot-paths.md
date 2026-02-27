@@ -35,13 +35,13 @@ All 32 instances of `#[cfg_attr(std, inline)]` and `#[cfg_attr(std, inline(alway
 
 Currently `read_varint32` calls `read_u8` up to 5 times, each performing an independent bounds check via `bytes.get(self.start)`. For the common case (most protobuf data has plenty of bytes remaining), we can check once that at least 5 bytes are available, then read directly from the slice without per-byte bounds checks. Fall back to the current per-byte approach only when near the end of the buffer.
 
-- [ ] Add a private `read_varint32_slow` method containing the current per-byte implementation
-- [ ] Rewrite `read_varint32` with a fast path: check `self.start + 5 <= self.end` and `self.end <= bytes.len()`, then index directly into the slice
-- [ ] Fast path updates `self.start` once at the end instead of incrementing per byte
-- [ ] Fall back to `read_varint32_slow` when fewer than 5 bytes remain
-- [ ] Add test for varint32 at exact buffer boundary (4 bytes remaining, 5-byte varint)
-- [ ] Add test for 1-byte, 2-byte, and 5-byte varints
-- [ ] Run lib tests
+- [x] Add a private `read_varint32_slow` method containing the current per-byte implementation
+- [x] Rewrite `read_varint32` with a fast path: check `self.start + 5 <= self.end` and `self.end <= bytes.len()`, then index directly into the slice
+- [x] Fast path updates `self.start` once at the end instead of incrementing per byte
+- [x] Fall back to `read_varint32_slow` when fewer than 5 bytes remain
+- [x] Add test for varint32 at exact buffer boundary (4 bytes remaining, 5-byte varint)
+- [x] Add test for 1-byte, 2-byte, and 5-byte varints
+- [x] Run lib tests
 
 ### Task 3: Optimize varint64 with fast-path batch bounds check
 

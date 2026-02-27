@@ -117,91 +117,102 @@ impl BytesReader {
         Ok(*b)
     }
 
-    /// Reads the next varint encoded u64
+    /// Reads the next varint encoded u32
     #[cfg_attr(feature = "std", inline(always))]
     pub fn read_varint32(&mut self, bytes: &[u8]) -> Result<u32> {
-        let mut b = self.read_u8(bytes)?; // byte0
+        // Fast path: at least 5 bytes available, skip per-byte bounds checks
+        if self.start + 5 <= self.end && self.end <= bytes.len() {
+            let buf = unsafe { bytes.get_unchecked(self.start..) };
+
+            let b = buf[0];
+            if b & 0x80 == 0 {
+                self.start += 1;
+                return Ok(b as u32);
+            }
+            let mut r = (b & 0x7f) as u32;
+
+            let b = buf[1];
+            r |= ((b & 0x7f) as u32) << 7;
+            if b & 0x80 == 0 {
+                self.start += 2;
+                return Ok(r);
+            }
+
+            let b = buf[2];
+            r |= ((b & 0x7f) as u32) << 14;
+            if b & 0x80 == 0 {
+                self.start += 3;
+                return Ok(r);
+            }
+
+            let b = buf[3];
+            r |= ((b & 0x7f) as u32) << 21;
+            if b & 0x80 == 0 {
+                self.start += 4;
+                return Ok(r);
+            }
+
+            let b = buf[4];
+            r |= ((b & 0xf) as u32) << 28;
+            if b & 0x80 == 0 {
+                self.start += 5;
+                return Ok(r);
+            }
+
+            // Negative i32 encoded as 10-byte varint: discard remaining bytes
+            self.start += 5;
+            for _ in 0..5 {
+                if self.read_u8(bytes)? & 0x80 == 0 {
+                    return Ok(r);
+                }
+            }
+            return Err(Error::Varint);
+        }
+
+        // Slow path: near end of buffer, per-byte bounds checks
+        self.read_varint32_slow(bytes)
+    }
+
+    /// Slow path for read_varint32 when fewer than 5 bytes remain.
+    /// Uses per-byte bounds checks via read_u8.
+    #[cfg_attr(feature = "std", inline)]
+    fn read_varint32_slow(&mut self, bytes: &[u8]) -> Result<u32> {
+        let mut b = self.read_u8(bytes)?;
         if b & 0x80 == 0 {
             return Ok(b as u32);
         }
         let mut r = (b & 0x7f) as u32;
 
-        b = self.read_u8(bytes)?; // byte1
+        b = self.read_u8(bytes)?;
         r |= ((b & 0x7f) as u32) << 7;
         if b & 0x80 == 0 {
             return Ok(r);
         }
 
-        b = self.read_u8(bytes)?; // byte2
+        b = self.read_u8(bytes)?;
         r |= ((b & 0x7f) as u32) << 14;
         if b & 0x80 == 0 {
             return Ok(r);
         }
 
-        b = self.read_u8(bytes)?; // byte3
+        b = self.read_u8(bytes)?;
         r |= ((b & 0x7f) as u32) << 21;
         if b & 0x80 == 0 {
             return Ok(r);
         }
 
-        b = self.read_u8(bytes)?; // byte4
-        r |= ((b & 0xf) as u32) << 28; // silently prevent overflow; only mask 0xF
+        b = self.read_u8(bytes)?;
+        r |= ((b & 0xf) as u32) << 28;
         if b & 0x80 == 0 {
-            // WARNING ABOUT TRUNCATION
-            //
-            // In this case, byte4 takes the form 0ZZZ_YYYY where:
-            //     Y: part of the resulting 32-bit number
-            //     Z: beyond 32 bits (excess bits,not used)
-            //
-            // If the Z bits were set, it might indicate that the number being
-            // decoded was intended to be bigger than 32 bits, suggesting an
-            // error somewhere else.
-            //
-            // However, for the sake of consistency with Google's own protobuf
-            // implementation, and also to allow for any efficient use of those
-            // extra bits by users if they wish (this crate is meant for speed
-            // optimization anyway) we shall not check for this here.
-            //
-            // Therefore, THIS FUNCTION SIMPLY IGNORES THE EXTRA BITS, WHICH IS
-            // ESSENTIALLY A SILENT TRUNCATION!
             return Ok(r);
         }
 
-        // ANOTHER WARNING ABOUT TRUNCATION
-        //
-        // Again, we do not check whether the byte representation fits within 32
-        // bits, and simply ignore extra bytes, CONSTITUTING A SILENT
-        // TRUNCATION!
-        //
-        // Therefore, if the user wants this function to avoid ignoring any
-        // bits/bytes, they need to ensure that the input is a varint
-        // representing a value within EITHER u32 OR i32 range. Since at this
-        // point we are beyond 5 bits, the only possible case is a negative i32
-        // (since negative numbers are always 10 bytes in protobuf). We must
-        // have exactly 5 bytes more to go.
-        //
-        // Since we know it must be a negative number, and this function is
-        // meant to read 32-bit ints (there is a different function for reading
-        // 64-bit ints), the user might want to take care to ensure that this
-        // negative number is within valid i32 range, i.e. at least
-        // -2,147,483,648. Otherwise, this function simply ignores the extra
-        // bits, essentially constituting a silent truncation!
-        //
-        // What this means in the end is that the user should ensure that the
-        // resulting number, once decoded from the varint format, takes such a
-        // form:
-        //
-        // 11111111_11111111_11111111_11111111_1XXXXXXX_XXXXXXXX_XXXXXXXX_XXXXXXXX
-        // ^(MSB bit 63)                       ^(bit 31 is set)                  ^(LSB bit 0)
-
-        // discards extra bytes
         for _ in 0..5 {
             if self.read_u8(bytes)? & 0x80 == 0 {
                 return Ok(r);
             }
         }
 
-        // cannot read more than 10 bytes
         Err(Error::Varint)
     }
 
@@ -967,6 +978,82 @@ fn test_varint() {
     let data = [0x96, 0x01];
     let mut r = BytesReader::from_bytes(&data[..]);
     assert_eq!(150, r.read_varint32(&data[..]).unwrap());
+    assert!(r.is_eof());
+}
+
+#[test]
+fn test_varint32_1byte() {
+    // Value 1: single byte varint (no continuation bit)
+    let data = [0x01];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(1, r.read_varint32(&data).unwrap());
+    assert!(r.is_eof());
+
+    // Value 127: largest 1-byte varint
+    let data = [0x7f];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(127, r.read_varint32(&data).unwrap());
+    assert!(r.is_eof());
+
+    // Value 0
+    let data = [0x00];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(0, r.read_varint32(&data).unwrap());
+    assert!(r.is_eof());
+}
+
+#[test]
+fn test_varint32_2byte() {
+    // Value 128: smallest 2-byte varint
+    let data = [0x80, 0x01];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(128, r.read_varint32(&data).unwrap());
+    assert!(r.is_eof());
+
+    // Value 300
+    let data = [0xac, 0x02];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(300, r.read_varint32(&data).unwrap());
+    assert!(r.is_eof());
+}
+
+#[test]
+fn test_varint32_5byte() {
+    // u32::MAX = 4294967295 encoded as 5-byte varint
+    let data = [0xff, 0xff, 0xff, 0xff, 0x0f];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(u32::MAX, r.read_varint32(&data).unwrap());
+    assert!(r.is_eof());
+}
+
+#[test]
+fn test_varint32_boundary_slow_path() {
+    // 5-byte varint with only 4 bytes in buffer should fail (UnexpectedEndOfBuffer).
+    // This forces the slow path since < 5 bytes remain.
+    let data = [0xff, 0xff, 0xff, 0xff]; // 4 bytes, all with continuation bit
+    let mut r = BytesReader::from_bytes(&data);
+    assert!(r.read_varint32(&data).is_err());
+}
+
+#[test]
+fn test_varint32_boundary_exact_fit() {
+    // 4-byte varint fitting exactly in 4 bytes (slow path since < 5 bytes)
+    // Value: 0x0FFFFFFF = 268435455
+    let data = [0xff, 0xff, 0xff, 0x7f];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(0x0FFFFFFF, r.read_varint32(&data).unwrap());
+    assert!(r.is_eof());
+}
+
+#[test]
+fn test_varint32_negative_i32() {
+    // -1 as i32 encoded as 10-byte varint (all continuation bits set except last)
+    let data = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01];
+    let mut r = BytesReader::from_bytes(&data);
+    let val = r.read_varint32(&data).unwrap();
+    // -1 as i32 bit pattern = 0xFFFFFFFF, but read_varint32 masks byte4 with 0xF
+    // so we get 0xFFFFFFFF
+    assert_eq!(val as i32, -1);
     assert!(r.is_eof());
 }
 
