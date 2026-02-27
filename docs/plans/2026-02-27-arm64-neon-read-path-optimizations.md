@@ -83,13 +83,13 @@ Replace the branch-per-byte varint32 fast path with a branchless approach on aar
 
 Apply the same branchless approach to varint64:
 
-- [ ] Add `#[cfg(target_arch = "aarch64")]` branchless varint64 fast path in `read_varint64`
+- [x] Add `#[cfg(target_arch = "aarch64")]` branchless varint64 fast path in `read_varint64`
   - Same u64-load approach for the first 8 bytes
   - For varints > 8 bytes (9-10), load a second u64 or fall back to scalar for the tail
   - Combine parts using shifts matching the existing r0/r1/r2 decomposition
-- [ ] Keep existing scalar fast path under `#[cfg(not(target_arch = "aarch64"))]`
-- [ ] Write tests: varint64 decode produces identical results for all varint sizes (1-10 bytes)
-- [ ] Run project test suite - must pass before task 3
+- [x] Keep existing scalar fast path under `#[cfg(not(target_arch = "aarch64"))]`
+- [x] Write tests: varint64 decode produces identical results for all varint sizes (1-10 bytes)
+- [x] Run project test suite - must pass before task 3
 
 ### Task 3: NEON batch varint32 decode for packed fields
 
