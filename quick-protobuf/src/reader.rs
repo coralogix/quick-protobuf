@@ -122,7 +122,7 @@ impl BytesReader {
     pub fn read_varint32(&mut self, bytes: &[u8]) -> Result<u32> {
         // Fast path: at least 5 bytes available, skip per-byte bounds checks
         if self.start + 5 <= self.end && self.end <= bytes.len() {
-            let buf = unsafe { bytes.get_unchecked(self.start..) };
+            let buf = &bytes[self.start..];
 
             let b = buf[0];
             if b & 0x80 == 0 {
@@ -221,7 +221,7 @@ impl BytesReader {
     pub fn read_varint64(&mut self, bytes: &[u8]) -> Result<u64> {
         // Fast path: at least 10 bytes available, skip per-byte bounds checks
         if self.start + 10 <= self.end && self.end <= bytes.len() {
-            let buf = unsafe { bytes.get_unchecked(self.start..) };
+            let buf = &bytes[self.start..];
 
             // part0
             let b = buf[0];
@@ -289,6 +289,8 @@ impl BytesReader {
                 return Ok((r0 as u64 | (r1 as u64) << 28) | (r2 as u64) << 56);
             }
 
+            // Silent truncation of high bits, consistent with slow path and
+            // Google's protobuf implementation (see comment in read_varint64_slow).
             let b = buf[9];
             r2 |= (b as u32) << 7;
             if b & 0x80 == 0 {
@@ -297,6 +299,7 @@ impl BytesReader {
             }
 
             // cannot read more than 10 bytes
+            self.start += 10;
             return Err(Error::Varint);
         }
 
@@ -507,7 +510,7 @@ impl BytesReader {
         F: FnMut(&mut BytesReader, &'a [u8]) -> Result<M>,
     {
         let cur_end = self.end;
-        if self.start + len > cur_end {
+        if len > cur_end - self.start {
             return Err(Error::UnexpectedEndOfBuffer);
         }
         self.end = self.start + len;
@@ -545,7 +548,7 @@ impl BytesReader {
         F: FnMut(&mut BytesReader, &'a [u8]) -> Result<M>,
     {
         self.read_len_varint(bytes, |r, b| {
-            let mut v = Vec::with_capacity(r.len());
+            let mut v = Vec::with_capacity(r.len().min(1024));
             while !r.is_eof() {
                 v.push(read(r, b)?);
             }
@@ -1124,7 +1127,7 @@ fn test_varint32_boundary_slow_path() {
     // This forces the slow path since < 5 bytes remain.
     let data = [0xff, 0xff, 0xff, 0xff]; // 4 bytes, all with continuation bit
     let mut r = BytesReader::from_bytes(&data);
-    assert!(r.read_varint32(&data).is_err());
+    assert!(matches!(r.read_varint32(&data).unwrap_err(), Error::UnexpectedEndOfBuffer));
 }
 
 #[test]
@@ -1204,7 +1207,7 @@ fn test_varint64_boundary_slow_path() {
     // 10-byte varint with only 9 bytes in buffer should fail
     let data = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
     let mut r = BytesReader::from_bytes(&data);
-    assert!(r.read_varint64(&data).is_err());
+    assert!(matches!(r.read_varint64(&data).unwrap_err(), Error::UnexpectedEndOfBuffer));
 }
 
 #[test]
@@ -1299,5 +1302,106 @@ fn test_read_len_exceeding_buffer() {
     // read_len_varint will read the varint (0x0A = 10), then call read_len with len=10
     // but only 3 bytes remain after the varint, so it should fail
     let result = reader.read_bytes(data);
-    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), Error::UnexpectedEndOfBuffer));
+}
+
+#[test]
+fn test_varint32_fast_path_1byte() {
+    // 1-byte varint in a buffer large enough to trigger fast path (>= 5 bytes)
+    let data = [0x01, 0x00, 0x00, 0x00, 0x00];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(1, r.read_varint32(&data).unwrap());
+    assert_eq!(r.start, 1);
+}
+
+#[test]
+fn test_varint32_fast_path_2byte() {
+    // 2-byte varint (300) in a buffer large enough for fast path
+    let data = [0xac, 0x02, 0x00, 0x00, 0x00];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(300, r.read_varint32(&data).unwrap());
+    assert_eq!(r.start, 2);
+}
+
+#[test]
+fn test_varint32_fast_path_3byte() {
+    // 3-byte varint: 16384 = 0x4000 -> [0x80, 0x80, 0x01]
+    let data = [0x80, 0x80, 0x01, 0x00, 0x00];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(16384, r.read_varint32(&data).unwrap());
+    assert_eq!(r.start, 3);
+}
+
+#[test]
+fn test_varint32_fast_path_4byte() {
+    // 4-byte varint: 2097152 = 0x200000 -> [0x80, 0x80, 0x80, 0x01]
+    let data = [0x80, 0x80, 0x80, 0x01, 0x00];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(2097152, r.read_varint32(&data).unwrap());
+    assert_eq!(r.start, 4);
+}
+
+#[test]
+fn test_varint32_fast_path_overflow_error() {
+    // All 10+ bytes with continuation bit set -> Error::Varint (fast path)
+    let data = [0x80; 11];
+    let mut r = BytesReader::from_bytes(&data);
+    assert!(matches!(r.read_varint32(&data).unwrap_err(), Error::Varint));
+}
+
+#[test]
+fn test_varint64_fast_path_1byte() {
+    // 1-byte varint in buffer >= 10 bytes (fast path)
+    let data = [0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(1u64, r.read_varint64(&data).unwrap());
+    assert_eq!(r.start, 1);
+}
+
+#[test]
+fn test_varint64_fast_path_2byte() {
+    // 2-byte varint (300) in buffer >= 10 bytes (fast path)
+    let data = [0xac, 0x02, 0, 0, 0, 0, 0, 0, 0, 0];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(300u64, r.read_varint64(&data).unwrap());
+    assert_eq!(r.start, 2);
+}
+
+#[test]
+fn test_varint64_fast_path_5byte() {
+    // 5-byte varint (u32::MAX) in buffer >= 10 bytes (fast path)
+    let data = [0xff, 0xff, 0xff, 0xff, 0x0f, 0, 0, 0, 0, 0];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(u32::MAX as u64, r.read_varint64(&data).unwrap());
+    assert_eq!(r.start, 5);
+}
+
+#[test]
+fn test_varint64_fast_path_8byte() {
+    // 8-byte varint in buffer >= 10 bytes (fast path)
+    // Encodes value that uses part0 (28 bits) + part1 (28 bits) = 56 bits
+    // 0x00FFFFFFFFFFFFFF = 72057594037927935
+    let data = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0, 0];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(0x00FFFFFFFFFFFFFF_u64, r.read_varint64(&data).unwrap());
+    assert_eq!(r.start, 8);
+}
+
+#[test]
+fn test_varint64_fast_path_9byte() {
+    // 9-byte varint in buffer >= 10 bytes (fast path)
+    // Encodes a value using part0 + part1 + 1 byte of part2
+    let data = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0];
+    let mut r = BytesReader::from_bytes(&data);
+    let expected = (0x0F_FF_FF_FF_u64) | ((0x0F_FF_FF_FF_u64) << 28) | (0x7F_u64 << 56);
+    assert_eq!(expected, r.read_varint64(&data).unwrap());
+    assert_eq!(r.start, 9);
+}
+
+#[test]
+fn test_varint64_fast_path_overflow_error() {
+    // All 10 bytes with continuation bit set -> Error::Varint (fast path)
+    let data = [0x80; 10];
+    let mut r = BytesReader::from_bytes(&data);
+    assert!(matches!(r.read_varint64(&data).unwrap_err(), Error::Varint));
 }
