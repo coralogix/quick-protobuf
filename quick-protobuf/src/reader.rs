@@ -18,6 +18,7 @@ use std::io::Read;
 use std::path::Path;
 
 use core::convert::TryFrom;
+use core::convert::TryInto;
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;
@@ -31,8 +32,6 @@ use alloc::vec::Vec;
 use crate::errors::{Error, Result};
 use crate::message::MessageRead;
 
-use byteorder::ByteOrder;
-use byteorder::LittleEndian as LE;
 
 const WIRE_TYPE_VARINT: u8 = 0;
 const WIRE_TYPE_FIXED64: u8 = 1;
@@ -435,50 +434,74 @@ impl BytesReader {
 
     /// Reads fixed64 (little endian u64)
     #[cfg_attr(feature = "std", inline)]
-    fn read_fixed<M, F: Fn(&[u8]) -> M>(&mut self, bytes: &[u8], len: usize, read: F) -> Result<M> {
-        let v = read(
-            bytes
-                .get(self.start..self.start + len)
-                .ok_or(Error::UnexpectedEndOfBuffer)?,
-        );
-        self.start += len;
-        Ok(v)
-    }
-
-    /// Reads fixed64 (little endian u64)
-    #[cfg_attr(feature = "std", inline)]
     pub fn read_fixed64(&mut self, bytes: &[u8]) -> Result<u64> {
-        self.read_fixed(bytes, 8, LE::read_u64)
+        let end = self.start + 8;
+        if end > self.end {
+            return Err(Error::UnexpectedEndOfBuffer);
+        }
+        let v = u64::from_le_bytes(bytes[self.start..end].try_into().unwrap());
+        self.start = end;
+        Ok(v)
     }
 
     /// Reads fixed32 (little endian u32)
     #[cfg_attr(feature = "std", inline)]
     pub fn read_fixed32(&mut self, bytes: &[u8]) -> Result<u32> {
-        self.read_fixed(bytes, 4, LE::read_u32)
+        let end = self.start + 4;
+        if end > self.end {
+            return Err(Error::UnexpectedEndOfBuffer);
+        }
+        let v = u32::from_le_bytes(bytes[self.start..end].try_into().unwrap());
+        self.start = end;
+        Ok(v)
     }
 
     /// Reads sfixed64 (little endian i64)
     #[cfg_attr(feature = "std", inline)]
     pub fn read_sfixed64(&mut self, bytes: &[u8]) -> Result<i64> {
-        self.read_fixed(bytes, 8, LE::read_i64)
+        let end = self.start + 8;
+        if end > self.end {
+            return Err(Error::UnexpectedEndOfBuffer);
+        }
+        let v = i64::from_le_bytes(bytes[self.start..end].try_into().unwrap());
+        self.start = end;
+        Ok(v)
     }
 
     /// Reads sfixed32 (little endian i32)
     #[cfg_attr(feature = "std", inline)]
     pub fn read_sfixed32(&mut self, bytes: &[u8]) -> Result<i32> {
-        self.read_fixed(bytes, 4, LE::read_i32)
+        let end = self.start + 4;
+        if end > self.end {
+            return Err(Error::UnexpectedEndOfBuffer);
+        }
+        let v = i32::from_le_bytes(bytes[self.start..end].try_into().unwrap());
+        self.start = end;
+        Ok(v)
     }
 
     /// Reads float (little endian f32)
     #[cfg_attr(feature = "std", inline)]
     pub fn read_float(&mut self, bytes: &[u8]) -> Result<f32> {
-        self.read_fixed(bytes, 4, LE::read_f32)
+        let end = self.start + 4;
+        if end > self.end {
+            return Err(Error::UnexpectedEndOfBuffer);
+        }
+        let v = f32::from_le_bytes(bytes[self.start..end].try_into().unwrap());
+        self.start = end;
+        Ok(v)
     }
 
     /// Reads double (little endian f64)
     #[cfg_attr(feature = "std", inline)]
     pub fn read_double(&mut self, bytes: &[u8]) -> Result<f64> {
-        self.read_fixed(bytes, 8, LE::read_f64)
+        let end = self.start + 8;
+        if end > self.end {
+            return Err(Error::UnexpectedEndOfBuffer);
+        }
+        let v = f64::from_le_bytes(bytes[self.start..end].try_into().unwrap());
+        self.start = end;
+        Ok(v)
     }
 
     /// Reads bool (varint, check if == 0)
