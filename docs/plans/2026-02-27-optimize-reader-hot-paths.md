@@ -64,10 +64,10 @@ Same approach as Task 2 but for `read_varint64` which reads up to 10 bytes.
 
 Two minor improvements: (1) `read_len` currently sets `self.end = self.start + len` without verifying this doesn't exceed the actual buffer boundary - add a bounds check. (2) `read_packed` allocates `Vec::new()` with no capacity hint - estimate from the remaining byte count.
 
-- [ ] In `read_len`, add check that `self.start + len <= cur_end`, return `Error::UnexpectedEndOfBuffer` if not
-- [ ] In `read_packed`, replace `Vec::new()` with `Vec::with_capacity(...)` using `r.len() / estimated_element_size` (conservative: assume 1 byte per element for varints)
-- [ ] Add test: read_len with length exceeding remaining buffer should return error
-- [ ] Run lib tests
+- [x] In `read_len`, add check that `self.start + len <= cur_end`, return `Error::UnexpectedEndOfBuffer` if not
+- [x] In `read_packed`, replace `Vec::new()` with `Vec::with_capacity(...)` using `r.len() / estimated_element_size` (conservative: assume 1 byte per element for varints)
+- [x] Add test: read_len with length exceeding remaining buffer should return error
+- [x] Run lib tests
 
 ### Task 5: Expand benchmarks and validate optimizations
 

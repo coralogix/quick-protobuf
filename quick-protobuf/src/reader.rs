@@ -507,6 +507,9 @@ impl BytesReader {
         F: FnMut(&mut BytesReader, &'a [u8]) -> Result<M>,
     {
         let cur_end = self.end;
+        if self.start + len > cur_end {
+            return Err(Error::UnexpectedEndOfBuffer);
+        }
         self.end = self.start + len;
         let v = read(self, bytes)?;
         self.start = self.end;
@@ -542,7 +545,7 @@ impl BytesReader {
         F: FnMut(&mut BytesReader, &'a [u8]) -> Result<M>,
     {
         self.read_len_varint(bytes, |r, b| {
-            let mut v = Vec::new();
+            let mut v = Vec::with_capacity(r.len());
             while !r.is_eof() {
                 v.push(read(r, b)?);
             }
@@ -1285,4 +1288,16 @@ fn test_packed_fixed_eq() {
     assert_ne!(owned, owned_reversed);
     assert_ne!(owned, borrowed_reversed);
     assert_ne!(borrowed, borrowed_reversed);
+}
+
+#[test]
+fn test_read_len_exceeding_buffer() {
+    // Length-delimited field with length 10, but only 3 bytes of data follow
+    // Varint 10 = 0x0A, then only 3 bytes of actual data
+    let data: &[u8] = &[0x0A, 0x01, 0x02, 0x03];
+    let mut reader = BytesReader::from_bytes(data);
+    // read_len_varint will read the varint (0x0A = 10), then call read_len with len=10
+    // but only 3 bytes remain after the varint, so it should fail
+    let result = reader.read_bytes(data);
+    assert!(result.is_err());
 }
