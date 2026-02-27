@@ -76,11 +76,11 @@ Two minor improvements: (1) `read_len` currently sets `self.end = self.start + l
 
 Current benchmarks only cover varint reading. Add benchmarks for other reader operations to measure and validate the optimizations.
 
-- [ ] Add benchmark for `read_fixed32` (packed fixed data reading)
-- [ ] Add benchmark for `read_fixed64`
-- [ ] Add benchmark for `read_string` (length-delimited + UTF-8 validation)
-- [ ] Add benchmark for `read_packed` with varint elements
-- [ ] Run benchmarks and record results
+- [x] Add benchmark for `read_fixed32` (packed fixed data reading)
+- [x] Add benchmark for `read_fixed64`
+- [x] Add benchmark for `read_string` (length-delimited + UTF-8 validation)
+- [x] Add benchmark for `read_packed` with varint elements
+- [x] Run benchmarks and record results
 
 ### Task 6: Verify acceptance criteria
 
