@@ -40,6 +40,41 @@ const WIRE_TYPE_START_GROUP: u8 = 3;
 const WIRE_TYPE_END_GROUP: u8 = 4;
 const WIRE_TYPE_FIXED32: u8 = 5;
 
+/// Branchless varint32 decode from a u64 containing raw bytes (little-endian).
+/// Returns `Some((value, byte_length))` if the varint terminates within 5 bytes,
+/// or `None` for 10-byte negative-i32 encodings where all 5 low bytes have
+/// continuation bits set.
+#[cfg(any(target_arch = "aarch64", test))]
+#[cfg_attr(feature = "std", inline(always))]
+fn decode_varint32_branchless(raw: u64) -> Option<(u32, usize)> {
+    const MSB_MASK: u64 = 0x8080_8080_8080_8080;
+    const FIRST_5_MSB: u64 = 0x0000_0080_8080_8080;
+
+    // Identify terminator bytes (MSB = 0 means end of varint)
+    let term = !raw & MSB_MASK;
+
+    // If no terminator in first 5 bytes, this is a >5 byte varint (negative i32)
+    if term & FIRST_5_MSB == 0 {
+        return None;
+    }
+
+    // Isolate first terminator bit position
+    let first_term = term & term.wrapping_neg();
+    // Byte mask: all bits from 0 up to and including the terminator byte
+    let byte_mask = first_term | first_term.wrapping_sub(1);
+    let masked = raw & byte_mask;
+
+    // Extract 7-bit payload groups and combine into u32
+    let value = ((masked & 0x0000_007F)
+        | ((masked >> 1) & 0x0000_3F80)
+        | ((masked >> 2) & 0x001F_C000)
+        | ((masked >> 3) & 0x0FE0_0000)
+        | ((masked >> 4) & 0xF000_0000)) as u32;
+
+    let len = (first_term.trailing_zeros() / 8 + 1) as usize;
+    Some((value, len))
+}
+
 /// A struct to read protocol binary files
 ///
 /// # Examples
@@ -122,53 +157,87 @@ impl BytesReader {
     /// Reads the next varint encoded u32
     #[cfg_attr(feature = "std", inline(always))]
     pub fn read_varint32(&mut self, bytes: &[u8]) -> Result<u32> {
-        // Fast path: at least 5 bytes available, skip per-byte bounds checks
-        if self.start + 5 <= self.end && self.end <= bytes.len() {
-            let buf = &bytes[self.start..];
+        // ARM64 branchless fast path: load 8 bytes as u64, decode without branches
+        #[cfg(target_arch = "aarch64")]
+        {
+            if self.start + 8 <= self.end && self.end <= bytes.len() {
+                let raw = u64::from_le_bytes(
+                    bytes[self.start..self.start + 8].try_into().unwrap(),
+                );
 
-            let b = buf[0];
-            if b & 0x80 == 0 {
-                self.start += 1;
-                return Ok(b as u32);
-            }
-            let mut r = (b & 0x7f) as u32;
+                if let Some((value, len)) = decode_varint32_branchless(raw) {
+                    self.start += len;
+                    return Ok(value);
+                }
 
-            let b = buf[1];
-            r |= ((b & 0x7f) as u32) << 7;
-            if b & 0x80 == 0 {
-                self.start += 2;
-                return Ok(r);
-            }
+                // Negative i32 encoded as 10-byte varint: extract value from first
+                // 5 bytes, then skip remaining continuation bytes.
+                let result = ((raw & 0x0000_007F)
+                    | ((raw >> 1) & 0x0000_3F80)
+                    | ((raw >> 2) & 0x001F_C000)
+                    | ((raw >> 3) & 0x0FE0_0000)
+                    | ((raw >> 4) & 0xF000_0000)) as u32;
 
-            let b = buf[2];
-            r |= ((b & 0x7f) as u32) << 14;
-            if b & 0x80 == 0 {
-                self.start += 3;
-                return Ok(r);
-            }
-
-            let b = buf[3];
-            r |= ((b & 0x7f) as u32) << 21;
-            if b & 0x80 == 0 {
-                self.start += 4;
-                return Ok(r);
-            }
-
-            let b = buf[4];
-            r |= ((b & 0xf) as u32) << 28;
-            if b & 0x80 == 0 {
                 self.start += 5;
-                return Ok(r);
+                for _ in 0..5 {
+                    if self.read_u8(bytes)? & 0x80 == 0 {
+                        return Ok(result);
+                    }
+                }
+                return Err(Error::Varint);
             }
+        }
 
-            // Negative i32 encoded as 10-byte varint: discard remaining bytes
-            self.start += 5;
-            for _ in 0..5 {
-                if self.read_u8(bytes)? & 0x80 == 0 {
+        // Scalar fast path: at least 5 bytes available, skip per-byte bounds checks
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            if self.start + 5 <= self.end && self.end <= bytes.len() {
+                let buf = &bytes[self.start..];
+
+                let b = buf[0];
+                if b & 0x80 == 0 {
+                    self.start += 1;
+                    return Ok(b as u32);
+                }
+                let mut r = (b & 0x7f) as u32;
+
+                let b = buf[1];
+                r |= ((b & 0x7f) as u32) << 7;
+                if b & 0x80 == 0 {
+                    self.start += 2;
                     return Ok(r);
                 }
+
+                let b = buf[2];
+                r |= ((b & 0x7f) as u32) << 14;
+                if b & 0x80 == 0 {
+                    self.start += 3;
+                    return Ok(r);
+                }
+
+                let b = buf[3];
+                r |= ((b & 0x7f) as u32) << 21;
+                if b & 0x80 == 0 {
+                    self.start += 4;
+                    return Ok(r);
+                }
+
+                let b = buf[4];
+                r |= ((b & 0xf) as u32) << 28;
+                if b & 0x80 == 0 {
+                    self.start += 5;
+                    return Ok(r);
+                }
+
+                // Negative i32 encoded as 10-byte varint: discard remaining bytes
+                self.start += 5;
+                for _ in 0..5 {
+                    if self.read_u8(bytes)? & 0x80 == 0 {
+                        return Ok(r);
+                    }
+                }
+                return Err(Error::Varint);
             }
-            return Err(Error::Varint);
         }
 
         // Slow path: near end of buffer, per-byte bounds checks
@@ -1591,4 +1660,144 @@ fn test_varint64_fast_path_overflow_error() {
     let data = [0x80; 10];
     let mut r = BytesReader::from_bytes(&data);
     assert!(matches!(r.read_varint64(&data).unwrap_err(), Error::Varint));
+}
+
+#[test]
+fn test_branchless_varint32_1byte() {
+    // Value 0
+    let raw = u64::from_le_bytes([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    let (value, len) = decode_varint32_branchless(raw).unwrap();
+    assert_eq!(value, 0);
+    assert_eq!(len, 1);
+
+    // Value 1 (with garbage in trailing bytes)
+    let raw = u64::from_le_bytes([0x01, 0xAB, 0xCD, 0xEF, 0x12, 0x34, 0x56, 0x78]);
+    let (value, len) = decode_varint32_branchless(raw).unwrap();
+    assert_eq!(value, 1);
+    assert_eq!(len, 1);
+
+    // Value 127 (largest 1-byte varint)
+    let raw = u64::from_le_bytes([0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+    let (value, len) = decode_varint32_branchless(raw).unwrap();
+    assert_eq!(value, 127);
+    assert_eq!(len, 1);
+}
+
+#[test]
+fn test_branchless_varint32_2byte() {
+    // Value 128: [0x80, 0x01]
+    let raw = u64::from_le_bytes([0x80, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    let (value, len) = decode_varint32_branchless(raw).unwrap();
+    assert_eq!(value, 128);
+    assert_eq!(len, 2);
+
+    // Value 300: [0xAC, 0x02]
+    let raw = u64::from_le_bytes([0xAC, 0x02, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+    let (value, len) = decode_varint32_branchless(raw).unwrap();
+    assert_eq!(value, 300);
+    assert_eq!(len, 2);
+
+    // Value 16383 (max 2-byte): [0xFF, 0x7F]
+    let raw = u64::from_le_bytes([0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    let (value, len) = decode_varint32_branchless(raw).unwrap();
+    assert_eq!(value, 16383);
+    assert_eq!(len, 2);
+}
+
+#[test]
+fn test_branchless_varint32_3byte() {
+    // Value 16384: [0x80, 0x80, 0x01]
+    let raw = u64::from_le_bytes([0x80, 0x80, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    let (value, len) = decode_varint32_branchless(raw).unwrap();
+    assert_eq!(value, 16384);
+    assert_eq!(len, 3);
+
+    // Value 2097151 (max 3-byte): [0xFF, 0xFF, 0x7F]
+    let raw = u64::from_le_bytes([0xFF, 0xFF, 0x7F, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE]);
+    let (value, len) = decode_varint32_branchless(raw).unwrap();
+    assert_eq!(value, 2097151);
+    assert_eq!(len, 3);
+}
+
+#[test]
+fn test_branchless_varint32_4byte() {
+    // Value 2097152: [0x80, 0x80, 0x80, 0x01]
+    let raw = u64::from_le_bytes([0x80, 0x80, 0x80, 0x01, 0x00, 0x00, 0x00, 0x00]);
+    let (value, len) = decode_varint32_branchless(raw).unwrap();
+    assert_eq!(value, 2097152);
+    assert_eq!(len, 4);
+
+    // Value 268435455 (max 4-byte): [0xFF, 0xFF, 0xFF, 0x7F]
+    let raw = u64::from_le_bytes([0xFF, 0xFF, 0xFF, 0x7F, 0xAA, 0xBB, 0xCC, 0xDD]);
+    let (value, len) = decode_varint32_branchless(raw).unwrap();
+    assert_eq!(value, 268435455);
+    assert_eq!(len, 4);
+}
+
+#[test]
+fn test_branchless_varint32_5byte() {
+    // u32::MAX: [0xFF, 0xFF, 0xFF, 0xFF, 0x0F]
+    let raw = u64::from_le_bytes([0xFF, 0xFF, 0xFF, 0xFF, 0x0F, 0x00, 0x00, 0x00]);
+    let (value, len) = decode_varint32_branchless(raw).unwrap();
+    assert_eq!(value, u32::MAX);
+    assert_eq!(len, 5);
+
+    // Value 268435456 (min 5-byte): [0x80, 0x80, 0x80, 0x80, 0x01]
+    let raw = u64::from_le_bytes([0x80, 0x80, 0x80, 0x80, 0x01, 0xAA, 0xBB, 0xCC]);
+    let (value, len) = decode_varint32_branchless(raw).unwrap();
+    assert_eq!(value, 268435456);
+    assert_eq!(len, 5);
+}
+
+#[test]
+fn test_branchless_varint32_negative_i32_returns_none() {
+    // -1 as i32 encoded as 10-byte varint: all first 5 bytes have continuation bits
+    let raw = u64::from_le_bytes([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+    assert!(decode_varint32_branchless(raw).is_none());
+
+    // All bytes 0x80 (continuation only, no value bits)
+    let raw = u64::from_le_bytes([0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80]);
+    assert!(decode_varint32_branchless(raw).is_none());
+}
+
+#[test]
+fn test_branchless_varint32_matches_scalar_for_all_sizes() {
+    // Encode a u32 as a varint and verify branchless decode matches
+    fn encode_varint32(mut value: u32) -> Vec<u8> {
+        let mut result = Vec::new();
+        loop {
+            if value < 0x80 {
+                result.push(value as u8);
+                break;
+            }
+            result.push((value as u8) | 0x80);
+            value >>= 7;
+        }
+        result
+    }
+
+    let test_values: &[u32] = &[
+        0, 1, 2, 63, 64, 127,               // 1-byte
+        128, 255, 256, 300, 16383,           // 2-byte
+        16384, 32768, 2097151,               // 3-byte
+        2097152, 134217728, 268435455,       // 4-byte
+        268435456, u32::MAX / 2, u32::MAX,   // 5-byte
+    ];
+
+    for &val in test_values {
+        let encoded = encode_varint32(val);
+        let mut buf = [0u8; 8];
+        buf[..encoded.len()].copy_from_slice(&encoded);
+        let raw = u64::from_le_bytes(buf);
+
+        let (decoded, len) = decode_varint32_branchless(raw)
+            .unwrap_or_else(|| panic!("branchless decode returned None for value {}", val));
+        assert_eq!(decoded, val, "value mismatch for {}", val);
+        assert_eq!(len, encoded.len(), "length mismatch for {}", val);
+
+        // Also verify against BytesReader scalar decode
+        let mut reader = BytesReader::from_bytes(&buf);
+        let scalar_val = reader.read_varint32(&buf).unwrap();
+        assert_eq!(decoded, scalar_val, "branchless vs scalar mismatch for {}", val);
+    }
 }
