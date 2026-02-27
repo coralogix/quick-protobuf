@@ -84,7 +84,7 @@ Current benchmarks only cover varint reading. Add benchmarks for other reader op
 
 ### Task 6: Verify acceptance criteria
 
-- [ ] Run full lib test suite (`cargo test --manifest-path quick-protobuf/Cargo.toml --lib`)
-- [ ] Run clippy (`cargo clippy --manifest-path quick-protobuf/Cargo.toml`)
-- [ ] Verify no compiler warnings about unknown cfg `std`
-- [ ] Run benchmarks to confirm no regressions
+- [x] Run full lib test suite (`cargo test --manifest-path quick-protobuf/Cargo.toml --lib`)
+- [x] Run clippy (`cargo clippy --manifest-path quick-protobuf/Cargo.toml`)
+- [x] Verify no compiler warnings about unknown cfg `std`
+- [x] Run benchmarks to confirm no regressions
