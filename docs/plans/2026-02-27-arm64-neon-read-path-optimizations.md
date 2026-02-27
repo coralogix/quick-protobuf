@@ -128,10 +128,10 @@ Add benchmarks that highlight the SIMD improvements:
 
 ### Task 5: Verify acceptance criteria
 
-- [ ] Run full test suite: `cargo test --manifest-path quick-protobuf/Cargo.toml`
-- [ ] Run linter: `cargo clippy --manifest-path quick-protobuf/Cargo.toml`
-- [ ] Verify all aarch64-gated code compiles (cross-check with `--target aarch64-unknown-linux-gnu` if available)
-- [ ] Verify non-aarch64 builds are unaffected (existing scalar paths unchanged)
+- [x] Run full test suite: `cargo test --manifest-path quick-protobuf/Cargo.toml`
+- [x] Run linter: `cargo clippy --manifest-path quick-protobuf/Cargo.toml`
+- [x] Verify all aarch64-gated code compiles (cross-check with `--target aarch64-unknown-linux-gnu` if available)
+- [x] Verify non-aarch64 builds are unaffected (existing scalar paths unchanged)
 
 ### Task 6: Update documentation
 
