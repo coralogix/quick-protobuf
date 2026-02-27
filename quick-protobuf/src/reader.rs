@@ -2328,3 +2328,154 @@ fn test_read_packed_int32_all_max_positive() {
     let result = reader.read_packed_int32(&data).unwrap();
     assert_eq!(result, values);
 }
+
+// ---- Fixed-width read method tests ----
+
+#[test]
+fn test_read_fixed32_success() {
+    let data: &[u8] = &[0x2A, 0x00, 0x00, 0x00];
+    let mut r = BytesReader::from_bytes(data);
+    assert_eq!(42u32, r.read_fixed32(data).unwrap());
+    assert!(r.is_eof());
+}
+
+#[test]
+fn test_read_fixed32_insufficient_buffer() {
+    let data: &[u8] = &[0x01, 0x02, 0x03]; // 3 bytes, need 4
+    let mut r = BytesReader::from_bytes(data);
+    assert!(matches!(
+        r.read_fixed32(data).unwrap_err(),
+        Error::UnexpectedEndOfBuffer
+    ));
+}
+
+#[test]
+fn test_read_fixed64_success() {
+    let data: &[u8] = &[0x2A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+    let mut r = BytesReader::from_bytes(data);
+    assert_eq!(42u64, r.read_fixed64(data).unwrap());
+    assert!(r.is_eof());
+}
+
+#[test]
+fn test_read_fixed64_insufficient_buffer() {
+    let data: &[u8] = &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]; // 7 bytes, need 8
+    let mut r = BytesReader::from_bytes(data);
+    assert!(matches!(
+        r.read_fixed64(data).unwrap_err(),
+        Error::UnexpectedEndOfBuffer
+    ));
+}
+
+#[test]
+fn test_read_sfixed32_success() {
+    // -1 in little-endian i32 = 0xFF 0xFF 0xFF 0xFF
+    let data: &[u8] = &[0xFF, 0xFF, 0xFF, 0xFF];
+    let mut r = BytesReader::from_bytes(data);
+    assert_eq!(-1i32, r.read_sfixed32(data).unwrap());
+    assert!(r.is_eof());
+}
+
+#[test]
+fn test_read_sfixed32_insufficient_buffer() {
+    let data: &[u8] = &[0x01, 0x02];
+    let mut r = BytesReader::from_bytes(data);
+    assert!(matches!(
+        r.read_sfixed32(data).unwrap_err(),
+        Error::UnexpectedEndOfBuffer
+    ));
+}
+
+#[test]
+fn test_read_sfixed64_success() {
+    // -1 in little-endian i64
+    let data: &[u8] = &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+    let mut r = BytesReader::from_bytes(data);
+    assert_eq!(-1i64, r.read_sfixed64(data).unwrap());
+    assert!(r.is_eof());
+}
+
+#[test]
+fn test_read_sfixed64_insufficient_buffer() {
+    let data: &[u8] = &[0x01, 0x02, 0x03, 0x04];
+    let mut r = BytesReader::from_bytes(data);
+    assert!(matches!(
+        r.read_sfixed64(data).unwrap_err(),
+        Error::UnexpectedEndOfBuffer
+    ));
+}
+
+#[test]
+fn test_read_float_success() {
+    // 1.0f32 in little-endian = 0x00 0x00 0x80 0x3F
+    let data: &[u8] = &[0x00, 0x00, 0x80, 0x3F];
+    let mut r = BytesReader::from_bytes(data);
+    assert_eq!(1.0f32, r.read_float(data).unwrap());
+    assert!(r.is_eof());
+}
+
+#[test]
+fn test_read_float_insufficient_buffer() {
+    let data: &[u8] = &[0x00, 0x00, 0x80];
+    let mut r = BytesReader::from_bytes(data);
+    assert!(matches!(
+        r.read_float(data).unwrap_err(),
+        Error::UnexpectedEndOfBuffer
+    ));
+}
+
+#[test]
+fn test_read_double_success() {
+    // 1.0f64 in little-endian = 0x00 0x00 0x00 0x00 0x00 0x00 0xF0 0x3F
+    let data: &[u8] = &[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F];
+    let mut r = BytesReader::from_bytes(data);
+    assert_eq!(1.0f64, r.read_double(data).unwrap());
+    assert!(r.is_eof());
+}
+
+#[test]
+fn test_read_double_insufficient_buffer() {
+    let data: &[u8] = &[0x00, 0x00, 0x00, 0x00, 0x00];
+    let mut r = BytesReader::from_bytes(data);
+    assert!(matches!(
+        r.read_double(data).unwrap_err(),
+        Error::UnexpectedEndOfBuffer
+    ));
+}
+
+#[test]
+fn test_read_fixed32_respects_sub_message_end() {
+    // Buffer has enough physical bytes, but self.end is set tighter via read_len.
+    // Varint length prefix (2) + 2 bytes of payload, then 4 more physical bytes.
+    // read_fixed32 inside the length-delimited scope should fail (needs 4, has 2).
+    let data: &[u8] = &[
+        0x02, // varint length = 2
+        0x01, 0x02, // 2 bytes of sub-message
+        0x03, 0x04, 0x05, 0x06, // extra bytes outside sub-message
+    ];
+    let mut r = BytesReader::from_bytes(data);
+    let result = r.read_len_varint(data, |r, b| r.read_fixed32(b));
+    assert!(matches!(
+        result.unwrap_err(),
+        Error::UnexpectedEndOfBuffer
+    ));
+}
+
+// ---- read_u8 sub-message boundary test ----
+
+#[test]
+fn test_read_u8_respects_sub_message_end() {
+    // Buffer has physical bytes, but a length-delimited field constrains the end.
+    // Use read_len_varint with a zero-length prefix to set self.end = self.start,
+    // then try to read_u8 inside -- it should fail even though bytes exist.
+    let data: &[u8] = &[
+        0x00, // varint length = 0
+        0xFF, // byte that exists physically but is outside sub-message
+    ];
+    let mut r = BytesReader::from_bytes(data);
+    let result = r.read_len_varint(data, |r, b| r.read_u8(b));
+    assert!(matches!(
+        result.unwrap_err(),
+        Error::UnexpectedEndOfBuffer
+    ));
+}

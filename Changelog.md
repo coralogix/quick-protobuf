@@ -16,6 +16,9 @@
 - perf: fixed-width reads (`read_fixed32`, `read_fixed64`, `read_sfixed32`, `read_sfixed64`, `read_float`, `read_double`) rewritten with direct `from_le_bytes` and tighter `self.end` bounds check
 - perf: `read_packed` pre-allocates result `Vec` with element-count capacity hint
 - feat: `PackedFixedIntoIter` and `PackedFixedRefIter` implement `ExactSizeIterator` and `size_hint()`
+- feat: add `read_packed_int32` method on `BytesReader` for optimized packed int32 field reading
+- perf: ARM64 (aarch64) branchless varint32 and varint64 decoding using bit manipulation
+- perf: ARM64 (aarch64) NEON-accelerated batch varint32 decode for packed int32 fields via `read_packed_int32`
 
 ## pb-rs 0.10.0
 - fix: fix nested items and package name resolution
