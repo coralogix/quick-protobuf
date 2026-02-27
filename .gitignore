@@ -57,3 +57,6 @@ quick-protobuf/tests/rust_protobuf/v2/issue_170_c.rs
 quick-protobuf/tests/rust_protobuf/v2/issue_170_common.rs
 quick-protobuf/tests/rust_protobuf/v2/issue_170_d.rs
 quick-protobuf/tests/rust_protobuf/v2/issue_170_e.rs
+
+# ralphex progress logs
+.ralphex/progress/
