@@ -85,5 +85,5 @@ Replace the generic `read_fixed<M, F: Fn(&[u8]) -> M>` method and its callers wi
 
 ### Task 5: Update documentation
 
-- [ ] Update CLAUDE.md if internal patterns changed
-- [ ] Move this plan to `docs/plans/completed/`
+- [x] Update CLAUDE.md if internal patterns changed
+- [x] Move this plan to `docs/plans/completed/`
