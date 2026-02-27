@@ -3,7 +3,7 @@
 //! There are actually two main *readers*
 //! - a `BytesReader` which parses data from a `&[u8]`
 //! - a `Reader` which is a wrapper on `BytesReader` which has its own buffer. It provides
-//! convenient functions to the user suche as `from_file`
+//!   convenient functions to the user such as `from_file`
 //!
 //! It is advised, for convenience to directly work with a `Reader`.
 
@@ -111,6 +111,9 @@ impl BytesReader {
     /// Reads the next byte
     #[cfg_attr(feature = "std", inline(always))]
     pub fn read_u8(&mut self, bytes: &[u8]) -> Result<u8> {
+        if self.start >= self.end {
+            return Err(Error::UnexpectedEndOfBuffer);
+        }
         let b = bytes.get(self.start).ok_or(Error::UnexpectedEndOfBuffer)?;
         self.start += 1;
         Ok(*b)
@@ -439,7 +442,13 @@ impl BytesReader {
         if end > self.end {
             return Err(Error::UnexpectedEndOfBuffer);
         }
-        let v = u64::from_le_bytes(bytes[self.start..end].try_into().unwrap());
+        let v = u64::from_le_bytes(
+            bytes
+                .get(self.start..end)
+                .ok_or(Error::UnexpectedEndOfBuffer)?
+                .try_into()
+                .unwrap(), // infallible: slice is exactly 8 bytes
+        );
         self.start = end;
         Ok(v)
     }
@@ -451,7 +460,13 @@ impl BytesReader {
         if end > self.end {
             return Err(Error::UnexpectedEndOfBuffer);
         }
-        let v = u32::from_le_bytes(bytes[self.start..end].try_into().unwrap());
+        let v = u32::from_le_bytes(
+            bytes
+                .get(self.start..end)
+                .ok_or(Error::UnexpectedEndOfBuffer)?
+                .try_into()
+                .unwrap(), // infallible: slice is exactly 4 bytes
+        );
         self.start = end;
         Ok(v)
     }
@@ -463,7 +478,13 @@ impl BytesReader {
         if end > self.end {
             return Err(Error::UnexpectedEndOfBuffer);
         }
-        let v = i64::from_le_bytes(bytes[self.start..end].try_into().unwrap());
+        let v = i64::from_le_bytes(
+            bytes
+                .get(self.start..end)
+                .ok_or(Error::UnexpectedEndOfBuffer)?
+                .try_into()
+                .unwrap(), // infallible: slice is exactly 8 bytes
+        );
         self.start = end;
         Ok(v)
     }
@@ -475,7 +496,13 @@ impl BytesReader {
         if end > self.end {
             return Err(Error::UnexpectedEndOfBuffer);
         }
-        let v = i32::from_le_bytes(bytes[self.start..end].try_into().unwrap());
+        let v = i32::from_le_bytes(
+            bytes
+                .get(self.start..end)
+                .ok_or(Error::UnexpectedEndOfBuffer)?
+                .try_into()
+                .unwrap(), // infallible: slice is exactly 4 bytes
+        );
         self.start = end;
         Ok(v)
     }
@@ -487,7 +514,13 @@ impl BytesReader {
         if end > self.end {
             return Err(Error::UnexpectedEndOfBuffer);
         }
-        let v = f32::from_le_bytes(bytes[self.start..end].try_into().unwrap());
+        let v = f32::from_le_bytes(
+            bytes
+                .get(self.start..end)
+                .ok_or(Error::UnexpectedEndOfBuffer)?
+                .try_into()
+                .unwrap(), // infallible: slice is exactly 4 bytes
+        );
         self.start = end;
         Ok(v)
     }
@@ -499,7 +532,13 @@ impl BytesReader {
         if end > self.end {
             return Err(Error::UnexpectedEndOfBuffer);
         }
-        let v = f64::from_le_bytes(bytes[self.start..end].try_into().unwrap());
+        let v = f64::from_le_bytes(
+            bytes
+                .get(self.start..end)
+                .ok_or(Error::UnexpectedEndOfBuffer)?
+                .try_into()
+                .unwrap(), // infallible: slice is exactly 8 bytes
+        );
         self.start = end;
         Ok(v)
     }
@@ -571,7 +610,8 @@ impl BytesReader {
         F: FnMut(&mut BytesReader, &'a [u8]) -> Result<M>,
     {
         self.read_len_varint(bytes, |r, b| {
-            let mut v = Vec::with_capacity(r.len().min(1024));
+            let elem_size = core::mem::size_of::<M>().max(1);
+            let mut v = Vec::with_capacity((r.len() / elem_size).min(1024));
             while !r.is_eof() {
                 v.push(read(r, b)?);
             }
@@ -1328,6 +1368,22 @@ fn test_packed_fixed_size_hint() {
     iter.next();
     assert_eq!(iter.size_hint(), (0, Some(0)));
     assert_eq!(iter.len(), 0);
+
+    // Test Borrowed variant size_hint (len = bytes / size_of::<T>())
+    let bytes: [u8; 12] = [
+        0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+    ];
+    let pf3: PackedFixed<i32> = PackedFixed::Borrowed(&bytes);
+    let mut iter = (&pf3).into_iter();
+    assert_eq!(iter.size_hint(), (3, Some(3)));
+    assert_eq!(iter.len(), 3);
+    iter.next();
+    assert_eq!(iter.size_hint(), (2, Some(2)));
+    assert_eq!(iter.len(), 2);
+    iter.next();
+    iter.next();
+    assert_eq!(iter.size_hint(), (0, Some(0)));
+    assert_eq!(iter.len(), 0);
 }
 
 #[test]
@@ -1459,12 +1515,52 @@ fn test_varint64_fast_path_2byte() {
 }
 
 #[test]
+fn test_varint64_fast_path_3byte() {
+    // 3-byte varint: 16384 = 1 << 14 -> [0x80, 0x80, 0x01]
+    let data = [0x80, 0x80, 0x01, 0, 0, 0, 0, 0, 0, 0];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(16384u64, r.read_varint64(&data).unwrap());
+    assert_eq!(r.start, 3);
+}
+
+#[test]
+fn test_varint64_fast_path_4byte() {
+    // 4-byte varint: 2097152 = 1 << 21 -> [0x80, 0x80, 0x80, 0x01]
+    let data = [0x80, 0x80, 0x80, 0x01, 0, 0, 0, 0, 0, 0];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(2097152u64, r.read_varint64(&data).unwrap());
+    assert_eq!(r.start, 4);
+}
+
+#[test]
 fn test_varint64_fast_path_5byte() {
     // 5-byte varint (u32::MAX) in buffer >= 10 bytes (fast path)
     let data = [0xff, 0xff, 0xff, 0xff, 0x0f, 0, 0, 0, 0, 0];
     let mut r = BytesReader::from_bytes(&data);
     assert_eq!(u32::MAX as u64, r.read_varint64(&data).unwrap());
     assert_eq!(r.start, 5);
+}
+
+#[test]
+fn test_varint64_fast_path_6byte() {
+    // 6-byte varint: value = 128 << 28 = 34359738368
+    // part1 second byte (buf[5]) exits with lower 7 bits = 1, shifted << 35 from base
+    // buf[0..3]: all 0x80 (part0 = 0), buf[4]: 0x80 (r1 = 0), buf[5]: 0x01 (r1 |= 1<<7 = 128)
+    let data = [0x80, 0x80, 0x80, 0x80, 0x80, 0x01, 0, 0, 0, 0];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(128u64 << 28, r.read_varint64(&data).unwrap());
+    assert_eq!(r.start, 6);
+}
+
+#[test]
+fn test_varint64_fast_path_7byte() {
+    // 7-byte varint: value = 16384 << 28 = 4398046511104
+    // buf[0..3]: all 0x80 (part0 = 0), buf[4..5]: 0x80 (r1 bits 0-13 = 0),
+    // buf[6]: 0x01 (r1 |= 1<<14 = 16384)
+    let data = [0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01, 0, 0, 0];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(16384u64 << 28, r.read_varint64(&data).unwrap());
+    assert_eq!(r.start, 7);
 }
 
 #[test]

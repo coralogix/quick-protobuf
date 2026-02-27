@@ -8,6 +8,15 @@
   - test: Adding missing tests
   - chore: Changes to the build process or auxiliary tools/libraries/documentation
 
+## quick-protobuf 0.8.2
+- fix: correct `#[cfg_attr(std, inline)]` to `#[cfg_attr(feature = "std", inline)]` in reader.rs and writer.rs (inlining was previously a no-op)
+- fix: `read_len` now validates declared field length does not exceed remaining buffer, returning `Error::UnexpectedEndOfBuffer`
+- fix: `read_u8` now respects sub-reader `end` boundary, preventing reads past length-delimited message boundaries
+- perf: varint32 and varint64 decoding use a fast-path batch bounds check, reducing per-byte overhead in the common case
+- perf: fixed-width reads (`read_fixed32`, `read_fixed64`, `read_sfixed32`, `read_sfixed64`, `read_float`, `read_double`) rewritten with direct `from_le_bytes` and tighter `self.end` bounds check
+- perf: `read_packed` pre-allocates result `Vec` with element-count capacity hint
+- feat: `PackedFixedIntoIter` and `PackedFixedRefIter` implement `ExactSizeIterator` and `size_hint()`
+
 ## pb-rs 0.10.0
 - fix: fix nested items and package name resolution
 - fix: parser now parses comments successfully
