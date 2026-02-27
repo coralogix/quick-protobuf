@@ -219,6 +219,95 @@ impl BytesReader {
     /// Reads the next varint encoded u64
     #[cfg_attr(feature = "std", inline(always))]
     pub fn read_varint64(&mut self, bytes: &[u8]) -> Result<u64> {
+        // Fast path: at least 10 bytes available, skip per-byte bounds checks
+        if self.start + 10 <= self.end && self.end <= bytes.len() {
+            let buf = unsafe { bytes.get_unchecked(self.start..) };
+
+            // part0
+            let b = buf[0];
+            if b & 0x80 == 0 {
+                self.start += 1;
+                return Ok(b as u64);
+            }
+            let mut r0 = (b & 0x7f) as u32;
+
+            let b = buf[1];
+            r0 |= ((b & 0x7f) as u32) << 7;
+            if b & 0x80 == 0 {
+                self.start += 2;
+                return Ok(r0 as u64);
+            }
+
+            let b = buf[2];
+            r0 |= ((b & 0x7f) as u32) << 14;
+            if b & 0x80 == 0 {
+                self.start += 3;
+                return Ok(r0 as u64);
+            }
+
+            let b = buf[3];
+            r0 |= ((b & 0x7f) as u32) << 21;
+            if b & 0x80 == 0 {
+                self.start += 4;
+                return Ok(r0 as u64);
+            }
+
+            // part1
+            let b = buf[4];
+            let mut r1 = (b & 0x7f) as u32;
+            if b & 0x80 == 0 {
+                self.start += 5;
+                return Ok(r0 as u64 | (r1 as u64) << 28);
+            }
+
+            let b = buf[5];
+            r1 |= ((b & 0x7f) as u32) << 7;
+            if b & 0x80 == 0 {
+                self.start += 6;
+                return Ok(r0 as u64 | (r1 as u64) << 28);
+            }
+
+            let b = buf[6];
+            r1 |= ((b & 0x7f) as u32) << 14;
+            if b & 0x80 == 0 {
+                self.start += 7;
+                return Ok(r0 as u64 | (r1 as u64) << 28);
+            }
+
+            let b = buf[7];
+            r1 |= ((b & 0x7f) as u32) << 21;
+            if b & 0x80 == 0 {
+                self.start += 8;
+                return Ok(r0 as u64 | (r1 as u64) << 28);
+            }
+
+            // part2
+            let b = buf[8];
+            let mut r2 = (b & 0x7f) as u32;
+            if b & 0x80 == 0 {
+                self.start += 9;
+                return Ok((r0 as u64 | (r1 as u64) << 28) | (r2 as u64) << 56);
+            }
+
+            let b = buf[9];
+            r2 |= (b as u32) << 7;
+            if b & 0x80 == 0 {
+                self.start += 10;
+                return Ok((r0 as u64 | (r1 as u64) << 28) | (r2 as u64) << 56);
+            }
+
+            // cannot read more than 10 bytes
+            return Err(Error::Varint);
+        }
+
+        // Slow path: near end of buffer, per-byte bounds checks
+        self.read_varint64_slow(bytes)
+    }
+
+    /// Slow path for read_varint64 when fewer than 10 bytes remain.
+    /// Uses per-byte bounds checks via read_u8.
+    #[cfg_attr(feature = "std", inline)]
+    fn read_varint64_slow(&mut self, bytes: &[u8]) -> Result<u64> {
         // part0
         let mut b = self.read_u8(bytes)?;
         if b & 0x80 == 0 {
@@ -1055,6 +1144,64 @@ fn test_varint32_negative_i32() {
     // so we get 0xFFFFFFFF
     assert_eq!(val as i32, -1);
     assert!(r.is_eof());
+}
+
+#[test]
+fn test_varint64_1byte() {
+    // Value 0
+    let data = [0x00];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(0u64, r.read_varint64(&data).unwrap());
+    assert!(r.is_eof());
+
+    // Value 1
+    let data = [0x01];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(1u64, r.read_varint64(&data).unwrap());
+    assert!(r.is_eof());
+
+    // Value 127: largest 1-byte varint
+    let data = [0x7f];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(127u64, r.read_varint64(&data).unwrap());
+    assert!(r.is_eof());
+}
+
+#[test]
+fn test_varint64_5byte() {
+    // u32::MAX = 4294967295 encoded as 5-byte varint (tests part0 + part1 boundary)
+    let data = [0xff, 0xff, 0xff, 0xff, 0x0f];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(u32::MAX as u64, r.read_varint64(&data).unwrap());
+    assert!(r.is_eof());
+}
+
+#[test]
+fn test_varint64_10byte() {
+    // u64::MAX encoded as 10-byte varint
+    // Each of the first 9 bytes has continuation bit set (0xFF),
+    // last byte is 0x01 (carries bit 63)
+    let data = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(u64::MAX, r.read_varint64(&data).unwrap());
+    assert!(r.is_eof());
+}
+
+#[test]
+fn test_varint64_boundary_exact_fit() {
+    // 5-byte varint64 in exactly 5-byte buffer (slow path since < 10 bytes)
+    let data = [0xff, 0xff, 0xff, 0xff, 0x0f];
+    let mut r = BytesReader::from_bytes(&data);
+    assert_eq!(u32::MAX as u64, r.read_varint64(&data).unwrap());
+    assert!(r.is_eof());
+}
+
+#[test]
+fn test_varint64_boundary_slow_path() {
+    // 10-byte varint with only 9 bytes in buffer should fail
+    let data = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+    let mut r = BytesReader::from_bytes(&data);
+    assert!(r.read_varint64(&data).is_err());
 }
 
 #[test]

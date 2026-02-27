@@ -50,12 +50,12 @@ Currently `read_varint32` calls `read_u8` up to 5 times, each performing an inde
 
 Same approach as Task 2 but for `read_varint64` which reads up to 10 bytes.
 
-- [ ] Add a private `read_varint64_slow` method containing the current per-byte implementation
-- [ ] Rewrite `read_varint64` with a fast path: check `self.start + 10 <= self.end` and `self.end <= bytes.len()`, then index directly
-- [ ] Fall back to `read_varint64_slow` when fewer than 10 bytes remain
-- [ ] Add test for varint64 at exact buffer boundary
-- [ ] Add test for 1-byte, 5-byte, and 10-byte varint64s
-- [ ] Run lib tests
+- [x] Add a private `read_varint64_slow` method containing the current per-byte implementation
+- [x] Rewrite `read_varint64` with a fast path: check `self.start + 10 <= self.end` and `self.end <= bytes.len()`, then index directly
+- [x] Fall back to `read_varint64_slow` when fewer than 10 bytes remain
+- [x] Add test for varint64 at exact buffer boundary
+- [x] Add test for 1-byte, 5-byte, and 10-byte varint64s
+- [x] Run lib tests
 
 ### Task 4: Add bounds check in read_len and capacity hint in read_packed
 
