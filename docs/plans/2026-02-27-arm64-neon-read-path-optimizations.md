@@ -119,12 +119,12 @@ Add a NEON-accelerated path for `read_packed` when decoding varint-encoded types
 
 Add benchmarks that highlight the SIMD improvements:
 
-- [ ] Add `read_packed_int32` benchmark (packed repeated int32 with mixed varint sizes)
-- [ ] Add `read_packed_int32_small_values` benchmark (1-byte varints, best case for batch decode)
-- [ ] Add `read_packed_int32_large_values` benchmark (4-5 byte varints)
-- [ ] Add `read_varint32_multibyte` benchmark (varints that are 2-4 bytes, to measure branchless benefit)
-- [ ] Verify benchmarks compile and run
-- [ ] Run project test suite - must pass before task 5
+- [x] Add `read_packed_int32` benchmark (packed repeated int32 with mixed varint sizes)
+- [x] Add `read_packed_int32_small_values` benchmark (1-byte varints, best case for batch decode)
+- [x] Add `read_packed_int32_large_values` benchmark (4-5 byte varints)
+- [x] Add `read_varint32_multibyte` benchmark (varints that are 2-4 bytes, to measure branchless benefit)
+- [x] Verify benchmarks compile and run
+- [x] Run project test suite - must pass before task 5
 
 ### Task 5: Verify acceptance criteria
 
