@@ -263,8 +263,10 @@ unsafe fn batch_decode_varint32_neon(
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BytesReader {
-    start: usize,
-    end: usize,
+    /// Current read position within the buffer.
+    pub start: usize,
+    /// End-of-message boundary within the buffer.
+    pub end: usize,
 }
 
 impl BytesReader {
