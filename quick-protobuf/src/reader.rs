@@ -276,6 +276,32 @@ impl BytesReader {
         }
     }
 
+    /// Returns the current read position.
+    #[inline(always)]
+    pub fn start(&self) -> usize {
+        self.start
+    }
+
+    /// Returns the current end-of-message boundary.
+    #[inline(always)]
+    pub fn end(&self) -> usize {
+        self.end
+    }
+
+    /// Sets the current read position.
+    /// SAFETY: caller must ensure `pos <= self.end`.
+    #[inline(always)]
+    pub unsafe fn set_start(&mut self, pos: usize) {
+        self.start = pos;
+    }
+
+    /// Sets the end-of-message boundary.
+    /// SAFETY: caller must ensure `end <= bytes.len()` for the active buffer.
+    #[inline(always)]
+    pub unsafe fn set_end(&mut self, end: usize) {
+        self.end = end;
+    }
+
     /// Reads next tag, `None` if all bytes have been read
     #[cfg_attr(feature = "std", inline(always))]
     pub fn next_tag(&mut self, bytes: &[u8]) -> Result<u32> {
@@ -288,9 +314,11 @@ impl BytesReader {
         if self.start >= self.end {
             return Err(Error::UnexpectedEndOfBuffer);
         }
-        let b = bytes.get(self.start).ok_or(Error::UnexpectedEndOfBuffer)?;
+        // SAFETY: start < end (checked above) and end <= bytes.len() (BytesReader invariant),
+        // so start < bytes.len().
+        let b = unsafe { *bytes.get_unchecked(self.start) };
         self.start += 1;
-        Ok(*b)
+        Ok(b)
     }
 
     /// Reads the next varint encoded u32
@@ -300,9 +328,11 @@ impl BytesReader {
         #[cfg(target_arch = "aarch64")]
         {
             if self.start + 8 <= self.end && self.end <= bytes.len() {
-                let raw = u64::from_le_bytes(
-                    bytes[self.start..self.start + 8].try_into().unwrap(),
-                );
+                // SAFETY: start + 8 <= end <= bytes.len(), so reading 8 bytes at start is valid.
+                // [u8; 8] has alignment 1 so the pointer cast is always aligned.
+                let raw = u64::from_le_bytes(unsafe {
+                    *(bytes.as_ptr().add(self.start) as *const [u8; 8])
+                });
 
                 if let Some((value, len)) = decode_varint32_branchless(raw) {
                     self.start += len;
@@ -331,7 +361,8 @@ impl BytesReader {
         #[cfg(not(target_arch = "aarch64"))]
         {
             if self.start + 5 <= self.end && self.end <= bytes.len() {
-                let buf = &bytes[self.start..];
+                // SAFETY: start + 5 <= end <= bytes.len(), so bytes[start..] has >= 5 elements
+                let buf = unsafe { bytes.get_unchecked(self.start..) };
 
                 let b = buf[0];
                 if b & 0x80 == 0 {
@@ -433,9 +464,10 @@ impl BytesReader {
         #[cfg(target_arch = "aarch64")]
         {
             if self.start + 10 <= self.end && self.end <= bytes.len() {
-                let raw = u64::from_le_bytes(
-                    bytes[self.start..self.start + 8].try_into().unwrap(),
-                );
+                // SAFETY: start + 10 <= end <= bytes.len(), so reading 8 bytes at start is valid.
+                let raw = u64::from_le_bytes(unsafe {
+                    *(bytes.as_ptr().add(self.start) as *const [u8; 8])
+                });
 
                 if let Some((value, len)) = decode_varint64_branchless(raw) {
                     self.start += len;
@@ -453,7 +485,8 @@ impl BytesReader {
                     | ((raw >> 6) & 0x0001_FC00_0000_0000)
                     | ((raw >> 7) & 0x00FE_0000_0000_0000);
 
-                let buf = &bytes[self.start..];
+                // SAFETY: start + 10 <= end <= bytes.len(), so bytes[start..start+10] is valid
+                let buf = unsafe { bytes.get_unchecked(self.start..) };
 
                 // Byte 8 (part2, first byte)
                 let b8 = buf[8];
@@ -481,7 +514,8 @@ impl BytesReader {
         #[cfg(not(target_arch = "aarch64"))]
         {
             if self.start + 10 <= self.end && self.end <= bytes.len() {
-                let buf = &bytes[self.start..];
+                // SAFETY: start + 10 <= end <= bytes.len(), so bytes[start..] has >= 10 elements
+                let buf = unsafe { bytes.get_unchecked(self.start..) };
 
                 // part0
                 let b = buf[0];
@@ -701,13 +735,11 @@ impl BytesReader {
         if end > self.end {
             return Err(Error::UnexpectedEndOfBuffer);
         }
-        let v = u64::from_le_bytes(
-            bytes
-                .get(self.start..end)
-                .ok_or(Error::UnexpectedEndOfBuffer)?
-                .try_into()
-                .unwrap(), // infallible: slice is exactly 8 bytes
-        );
+        // SAFETY: end <= self.end <= bytes.len() (BytesReader invariant), and
+        // [u8; 8] has alignment 1 so the pointer cast is always valid.
+        let v = u64::from_le_bytes(unsafe {
+            *(bytes.as_ptr().add(self.start) as *const [u8; 8])
+        });
         self.start = end;
         Ok(v)
     }
@@ -719,13 +751,11 @@ impl BytesReader {
         if end > self.end {
             return Err(Error::UnexpectedEndOfBuffer);
         }
-        let v = u32::from_le_bytes(
-            bytes
-                .get(self.start..end)
-                .ok_or(Error::UnexpectedEndOfBuffer)?
-                .try_into()
-                .unwrap(), // infallible: slice is exactly 4 bytes
-        );
+        // SAFETY: end <= self.end <= bytes.len() (BytesReader invariant), and
+        // [u8; 4] has alignment 1 so the pointer cast is always valid.
+        let v = u32::from_le_bytes(unsafe {
+            *(bytes.as_ptr().add(self.start) as *const [u8; 4])
+        });
         self.start = end;
         Ok(v)
     }
@@ -737,13 +767,10 @@ impl BytesReader {
         if end > self.end {
             return Err(Error::UnexpectedEndOfBuffer);
         }
-        let v = i64::from_le_bytes(
-            bytes
-                .get(self.start..end)
-                .ok_or(Error::UnexpectedEndOfBuffer)?
-                .try_into()
-                .unwrap(), // infallible: slice is exactly 8 bytes
-        );
+        // SAFETY: end <= self.end <= bytes.len(), [u8; 8] has alignment 1
+        let v = i64::from_le_bytes(unsafe {
+            *(bytes.as_ptr().add(self.start) as *const [u8; 8])
+        });
         self.start = end;
         Ok(v)
     }
@@ -755,13 +782,10 @@ impl BytesReader {
         if end > self.end {
             return Err(Error::UnexpectedEndOfBuffer);
         }
-        let v = i32::from_le_bytes(
-            bytes
-                .get(self.start..end)
-                .ok_or(Error::UnexpectedEndOfBuffer)?
-                .try_into()
-                .unwrap(), // infallible: slice is exactly 4 bytes
-        );
+        // SAFETY: end <= self.end <= bytes.len(), [u8; 4] has alignment 1
+        let v = i32::from_le_bytes(unsafe {
+            *(bytes.as_ptr().add(self.start) as *const [u8; 4])
+        });
         self.start = end;
         Ok(v)
     }
@@ -773,13 +797,10 @@ impl BytesReader {
         if end > self.end {
             return Err(Error::UnexpectedEndOfBuffer);
         }
-        let v = f32::from_le_bytes(
-            bytes
-                .get(self.start..end)
-                .ok_or(Error::UnexpectedEndOfBuffer)?
-                .try_into()
-                .unwrap(), // infallible: slice is exactly 4 bytes
-        );
+        // SAFETY: end <= self.end <= bytes.len(), [u8; 4] has alignment 1
+        let v = f32::from_le_bytes(unsafe {
+            *(bytes.as_ptr().add(self.start) as *const [u8; 4])
+        });
         self.start = end;
         Ok(v)
     }
@@ -791,13 +812,10 @@ impl BytesReader {
         if end > self.end {
             return Err(Error::UnexpectedEndOfBuffer);
         }
-        let v = f64::from_le_bytes(
-            bytes
-                .get(self.start..end)
-                .ok_or(Error::UnexpectedEndOfBuffer)?
-                .try_into()
-                .unwrap(), // infallible: slice is exactly 8 bytes
-        );
+        // SAFETY: end <= self.end <= bytes.len(), [u8; 8] has alignment 1
+        let v = f64::from_le_bytes(unsafe {
+            *(bytes.as_ptr().add(self.start) as *const [u8; 8])
+        });
         self.start = end;
         Ok(v)
     }
@@ -845,7 +863,9 @@ impl BytesReader {
     #[cfg_attr(feature = "std", inline)]
     pub fn read_bytes<'a>(&mut self, bytes: &'a [u8]) -> Result<&'a [u8]> {
         self.read_len_varint(bytes, |r, b| {
-            b.get(r.start..r.end).ok_or(Error::UnexpectedEndOfBuffer)
+            // SAFETY: read_len validates len <= (cur_end - start) and sets end = start + len,
+            // where cur_end <= b.len() is the BytesReader invariant. So start <= end <= b.len().
+            Ok(unsafe { b.get_unchecked(r.start..r.end) })
         })
     }
 
@@ -853,9 +873,9 @@ impl BytesReader {
     #[cfg_attr(feature = "std", inline)]
     pub fn read_string<'a>(&mut self, bytes: &'a [u8]) -> Result<&'a str> {
         self.read_len_varint(bytes, |r, b| {
-            b.get(r.start..r.end)
-                .ok_or(Error::UnexpectedEndOfBuffer)
-                .and_then(|x| ::core::str::from_utf8(x).map_err(|e| e.into()))
+            // SAFETY: same invariant as read_bytes — read_len guarantees start <= end <= b.len()
+            let slice = unsafe { b.get_unchecked(r.start..r.end) };
+            ::core::str::from_utf8(slice).map_err(|e| e.into())
         })
     }
 
